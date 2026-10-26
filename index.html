@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NOVA AI</title>
+<style>
+body{margin:0;background:#07110d;color:#b8ffd0;font:16px system-ui}
+header{padding:20px;color:#55ff91;border-bottom:1px solid #205a38}
+main{max-width:700px;margin:auto;padding:16px}
+#chat{height:55vh;overflow:auto;border:1px solid #205a38;
+border-radius:12px;padding:12px;white-space:pre-wrap}
+form{display:flex;gap:8px;margin-top:12px}
+input{flex:1;min-width:0;padding:12px;background:#102319;
+color:white;border:1px solid #35794c;border-radius:8px}
+button{padding:12px;background:#55ff91;border:0;border-radius:8px}
+</style>
+</head>
+<body>
+<header><h1>NOVA AI</h1>Osobní asistent · Web 0.1</header>
+<main>
+<div id="chat" aria-live="polite">NOVA > Systémy online. Napiš /help.</div>
+<form id="form">
+<input id="msg" placeholder="Napiš zprávu..." required>
+<button>Odeslat</button>
+</form>
+</main>
+<script>
+const chat=document.getElementById("chat");
+const input=document.getElementById("msg");
+const key="nova-web-chat";
+let history=JSON.parse(localStorage.getItem(key)||"[]");
+function show(role,text){
+ const p=document.createElement("p");
+ p.textContent=role+" > "+text;
+ chat.appendChild(p);
+ chat.scrollTop=chat.scrollHeight;
+}
+history.forEach(m=>show(m.role,m.text));
+document.getElementById("form").addEventListener("submit",e=>{
+ e.preventDefault();
+ const t=input.value.trim();
+ if(!t)return;
+ show("TY",t);
+ let answer="Zatím jsem jednoduchý prototyp, ne plnohodnotná AI. Napiš /help.";
+ if(t.toLowerCase()==="/help")answer="Příkazy: /help, /time, /remember text, /memory";
+ else if(t.toLowerCase()==="/time")answer="Čas: "+new Date().toLocaleString("cs-CZ");
+ else if(t.toLowerCase().startsWith("/remember ")){
+  let notes=JSON.parse(localStorage.getItem("nova-notes")||"[]");
+  notes.push(t.slice(10));
+  localStorage.setItem("nova-notes",JSON.stringify(notes));
+  answer="Poznámka uložena.";
+ }else if(t.toLowerCase()==="/memory"){
+  answer=JSON.parse(localStorage.getItem("nova-notes")||"[]").join("\n")||"Paměť je prázdná.";
+ }else if(["ahoj","čau"].includes(t.toLowerCase()))answer="Ahoj! Jsem NOVA.";
+ show("NOVA",answer);
+ history.push({role:"TY",text:t},{role:"NOVA",text:answer});
+ localStorage.setItem(key,JSON.stringify(history));
+ input.value="";
+});
+</script>
+</body>
+</html>
