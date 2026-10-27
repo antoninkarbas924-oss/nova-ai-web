@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NOVA AI</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#07110d;color:#d5ffe2;font:16px system-ui,-apple-system,sans-serif}
+header{padding:18px 20px;color:#55ff91;border-bottom:1px solid #205a38;background:#091710}
+header h1{margin:0 0 4px;font-size:1.7rem;letter-spacing:.08em}
+header p{margin:0;color:#a0d9b4;font-size:.9rem}
+main{max-width:760px;margin:auto;padding:16px;display:flex;flex-direction:column;min-height:calc(100dvh - 88px)}
+#status{font-size:.8rem;color:#8fcca4;margin:0 0 10px}
+#chat{flex:1;min-height:45vh;max-height:62vh;overflow:auto;border:1px solid #205a38;border-radius:14px;padding:14px;background:#091710;white-space:pre-wrap;overflow-wrap:anywhere}
+.message{margin:0 0 14px;line-height:1.5}
+.message:last-child{margin-bottom:0}
+.role{font-size:.76rem;font-weight:800;letter-spacing:.08em;color:#55ff91;margin-bottom:3px}
+.message.user .role{color:#a7c8ff}
+.bubble{color:#e0ffea}
+form{display:flex;gap:8px;margin-top:12px}
+input{flex:1;min-width:0;padding:13px;background:#102319;color:white;border:1px solid #35794c;border-radius:10px;font:inherit;outline:none}
+input:focus{border-color:#55ff91;box-shadow:0 0 0 2px #55ff9122}
+button{padding:12px 16px;background:#55ff91;color:#06140b;border:0;border-radius:10px;font:inherit;font-weight:700;cursor:pointer}
+button:focus-visible{outline:2px solid white;outline-offset:2px}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:9px}
+.actions button{background:#102319;color:#b8ffd0;border:1px solid #35794c;font-size:.85rem;padding:8px 10px}
+footer{color:#7ba98a;font-size:.78rem;margin-top:12px;line-height:1.45}
+@media(max-width:480px){main{padding:10px}#chat{padding:11px}form{gap:6px}button{padding:11px 12px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>NOVA AI</h1>
+  <p>Osobní asistent · Web 0.2 · lokální režim</p>
+</header>
+<main>
+  <p id="status">● Systémy online · bez externího AI API</p>
+  <div id="chat" aria-live="polite" aria-label="Konverzace"></div>
+  <form id="form">
+    <input id="msg" placeholder="Zeptej se nebo zadej úkol…" autocomplete="off" required aria-label="Zpráva pro NOVA">
+    <button type="submit">Odeslat</button>
+  </form>
+  <div class="actions">
+    <button type="button" data-prompt="Kolik je 125 krát 48?">🧮 Zkus výpočet</button>
+    <button type="button" data-prompt="Kolik je 15 % z 800?">％ Procenta</button>
+    <button type="button" data-prompt="Co si o mně pamatuješ?">🧠 Paměť</button>
+    <button type="button" id="clear">Vymazat chat</button>
+  </div>
+  <footer>NOVA Web 0.2 používá pravidla a výpočty přímo v prohlížeči. Není připojena k jazykovému modelu, takže neumí odpovědět na libovolnou otázku jako ChatGPT. Poznámky a historie zůstávají v tomto prohlížeči.</footer>
+</main>
+<script>
+"use strict";
+
+const chat = document.getElementById("chat");
+const input = document.getElementById("msg");
+const form = document.getElementById("form");
+const CHAT_KEY = "nova-web-chat-v2";
+const NOTES_KEY = "nova-notes-v2";
+const MAX_HISTORY = 150;
+
+function readJSON(key, fallback) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "null");
+    return value === null ? fallback : value;
+  } catch {
+    return fallback;
+  }
+}
+let history = readJSON(CHAT_KEY, []);
+if (!Array.isArray(history)) history = [];
+let notes = readJSON(NOTES_KEY, []);
+if (!Array.isArray(notes)) notes = [];
+
+function save() {
+  history = history.slice(-MAX_HISTORY);
+  try {
+    localStorage.setItem(CHAT_KEY, JSON.stringify(history));
+    localStorage.setItem(NOTES_KEY, JSON.stringify(notes));
+  } catch {
+    // If browser storage is full or unavailable, the current chat can still work.
+  }
+}
+
+function show(role, text, shouldSave = true) {
+  const wrap = document.createElement("div");
+  wrap.className = "message " + (role === "TY" ? "user" : "assistant");
+  const label = document.createElement("div");
+  label.className = "role";
+  label.textContent = role === "TY" ? "TY" : "NOVA";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = String(text);
+  wrap.append(label, bubble);
+  chat.appendChild(wrap);
+  chat.scrollTop = chat.scrollHeight;
+  if (shouldSave) {
+    history.push({ role, text: String(text) });
+    save();
+  }
+}
+
+function normalize(s) {
+  return s.toLocaleLowerCase("cs").trim().replace(/[!?.,;:]+$/g, "").trim();
+}
+
+// Small arithmetic parser. Supports + - * / ^, parentheses and %.
+// It never executes the user's input as JavaScript.
+function calculateExpression(source) {
+  let s = source.replace(/,/g, ".").replace(/×/g, "*").replace(/[÷:]/g, "/").replace(/\s+/g, "");
+  if (!s || s.length > 100 || !/^[0-9.+\-*/^()%]+$/.test(s)) return null;
+  let i = 0;
+  function expression() {
+    let value = term();
+    while (s[i] === "+" || s[i] === "-") {
+      const op = s[i++];
+      const rhs = term();
+      value = op === "+" ? value + rhs : value - rhs;
+    }
+    return value;
+  }
+  function term() {
+    let value = power();
+    while (s[i] === "*" || s[i] === "/") {
+      const op = s[i++];
+      const rhs = power();
+      if (op === "/" && rhs === 0) throw new Error("Dělení nulou není definované.");
+      value = op === "*" ? value * rhs : value / rhs;
+    }
+    return value;
+  }
+  function power() {
+    let value = unary();
+    if (s[i] === "^") {
+      i++;
+      value = Math.pow(value, power());
+    }
+    return value;
+  }
+  function unary() {
+    if (s[i] === "+") { i++; return unary(); }
+    if (s[i] === "-") { i++; return -unary(); }
+    return primary();
+  }
+  function primary() {
+    if (s[i] === "(") {
+      i++;
+      const value = expression();
+      if (s[i] !== ")") throw new Error("Chybí uzavírací závorka.");
+      i++;
+      return value;
+    }
+    const start = i;
+    while (i < s.length && /[0-9.]/.test(s[i])) i++;
+    if (start === i) throw new Error("Tomuto výrazu nerozumím.");
+    const value = Number(s.slice(start, i));
+    if (!Number.isFinite(value)) throw new Error("Neplatné číslo.");
+    if (s[i] === "%") { i++; return value / 100; }
+    return value;
+  }
+  const result = expression();
+  if (i !== s.length) throw new Error("Zkontroluj matematický výraz.");
+  if (!Number.isFinite(result)) throw new Error("Výsledek není konečné číslo.");
+  return Object.is(result, -0) ? 0 : result;
+}
+
+function formatNumber(n) {
+  return new Intl.NumberFormat("cs-CZ", { maximumFractionDigits: 8 }).format(n);
+}
+
+function extractMath(text) {
+  let s = text.trim();
+  s = s.replace(/^(kolik je|spočítej|vypočítej|vypocitej|spocitej|výsledek|vysledek|kolik dělá|kolik dela)\s+/i, "");
+  s = s.replace(/^(prosím\s+)?(mi\s+)?/i, "");
+  s = s.replace(/\b(krát|krat|krátké|násobeno|nasobeno)\b/gi, "*");
+  s = s.replace(/\b(děleno|deleno)\b/gi, "/");
+  s = s.replace(/\b(plus)\b/gi, "+").replace(/\b(mínus|minus)\b/gi, "-");
+  s = s.replace(/\bna druhou\b/gi, "^2");
+  s = s.replace(/\bna třetí\b/gi, "^3");
+  s = s.replace(/\s+procent\b/gi, "%");
+  return s.trim().replace(/[?=]+$/g, "").trim();
+}
+
+function answerToMath(raw) {
+  const t = normalize(raw);
+  const percent = t.match(/(?:kolik je\s+)?([+-]?\d+(?:[.,]\d+)?)\s*%\s*(?:z|ze)\s*([+-]?\d+(?:[.,]\d+)?)/i);
+  if (percent) {
+    const p = Number(percent[1].replace(",", "."));
+    const n = Number(percent[2].replace(",", "."));
+    return `${formatNumber(p)} % z ${formatNumber(n)} je ${formatNumber(p / 100 * n)}.`;
+  }
+  const hasMathWord = /\b(kolik je|spočítej|spocitej|vypočítej|vypocitej|výsledek|vysledek|krát|krat|děleno|deleno|plus|mínus|minus|procent|násobeno|nasobeno)\b/i.test(raw);
+  const hasMathSymbols = /[0-9]\s*[+\-*/^×÷()]/.test(raw);
+  if (!hasMathWord && !hasMathSymbols) return null;
+  const expr = extractMath(raw);
+  if (!expr || !/[0-9]/.test(expr)) return null;
+  try {
+    const result = calculateExpression(expr);
+    if (result === null) return null;
+    return `Výsledek: ${formatNumber(result)}`;
+  } catch (e) {
+    return e.message || "Výpočet se nepodařil.";
+  }
+}
+
+function respond(raw) {
+  const t = normalize(raw);
+  const mathAnswer = answerToMath(raw);
+  if (mathAnswer) return mathAnswer;
+
+  if (/^(ahoj|čau|cau|nazdar|dobrý den|dobry den|čus|cus)$/.test(t))
+    return "Ahoj! 👋 Jsem NOVA. Můžu počítat, ukládat poznámky a pomoct s jednoduchými úkoly. Co potřebuješ?";
+  if (/\b(jak se máš|jak se mas|jak ti je)\b/.test(t))
+    return "Díky za optání! 🙂 Jsem připravená pomoct. Co dneska vyřešíme?";
+  if (/\b(kdo jsi|co jsi|co je nova)\b/.test(t))
+    return "Jsem NOVA AI, lokální webový asistent. Zatím používám pravidla a nástroje, ne velký jazykový model.";
+  if (/\b(co umíš|co umis|pomoc|nápověda|napoveda|co dokážeš|co dokazes)\b/.test(t))
+    return "Umím počítat výrazy a procenta, říct datum a čas, uložit nebo najít poznámky a vést historii chatu. Zkus třeba „Kolik je 125 krát 48?“ nebo „Pamatuj si, že můj projekt se jmenuje NOVA.“";
+  if (/\b(čas|cas|kolik je hodin|aktuální čas|aktualni cas)\b/.test(t))
+    return "Teď je " + new Date().toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" }) + ".";
+  if (/\b(datum|jaký je dnes den|jaky je dnes den|dnešní datum|dnesni datum)\b/.test(t))
+    return "Dnes je " + new Date().toLocaleDateString("cs-CZ", { weekday: "long", day: "numeric", month: "long", year: "numeric" } ) + ".";
+  if (/^(pamatuj si|zapamatuj si|ulož poznámku|uloz poznamku)\b/.test(t)) {
+    const note = raw.replace(/^(pamatuj si|zapamatuj si|ulož poznámku|uloz poznamku)\s*[:,]?\s*/i, "").trim();
+    if (!note) return "Napiš také, co si mám zapamatovat. Například: „Pamatuj si, že můj projekt se jmenuje NOVA.“";
+    notes.push({ text: note, created: new Date().toISOString() });
+    save();
+    return "Zapamatováno: „" + note + "“";
+  }
+  if (/\b(co si o mně pamatuješ|co si o mne pamatujes|ukaž paměť|ukaz pamet|moje poznámky|moje poznamky|co máš uložené|co mas ulozene)\b/.test(t)) {
+    if (!notes.length) return "Zatím nemám uložené žádné poznámky. Řekni třeba: „Pamatuj si, že můj projekt se jmenuje NOVA.“";
+    return "Tvoje poznámky:\n" + notes.map((n, i) => `${i + 1}. ${n.text}`).join("\n");
+  }
+  if (/^(zapomeň všechno|zapomen vsechno|vymaž paměť|vymaz pamet)$/.test(t)) {
+    notes = [];
+    save();
+    return "Uložené poznámky jsem vymazala.";
+  }
+  const find = raw.match(/^(najdi|vyhledej)\s+(.+)/i);
+  if (find) {
+    const q = normalize(find[2]);
+    const found = notes.filter(n => normalize(n.text).includes(q));
+    return found.length ? "Našla jsem:\n" + found.map(n => "• " + n.text).join("\n") : "V uložených poznámkách jsem nic odpovídajícího nenašla.";
+  }
+  if (/\b(děkuju|dekuju|díky|diky|děkuji|dekuji)\b/.test(t))
+    return "Rádo se stalo! 😊";
+  if (/\b(ahoj nova|nova)\b/.test(t) && t.length < 20)
+    return "Jsem tady! Co pro tebe můžu udělat?";
+  return "Tomu zatím úplně nerozumím. Zvládnu matematiku, čas a datum, jednoduchou konverzaci a poznámky. Zkus napsat například „Kolik je 15 % z 800?“ nebo „Pamatuj si, že…“.";
+}
+
+function send(text) {
+  const t = String(text || "").trim();
+  if (!t) return;
+  show("TY", t);
+  const answer = respond(t);
+  show("NOVA", answer);
+  input.value = "";
+  input.focus();
+}
+
+chat.replaceChildren();
+if (history.length) {
+  history.slice(-MAX_HISTORY).forEach(m => {
+    if (m && (m.role === "TY" || m.role === "NOVA") && typeof m.text === "string") show(m.role, m.text, false);
+  });
+  show("NOVA", "Jsem zpět. Konverzace byla načtena z tohoto prohlížeče.", false);
+} else {
+  show("NOVA", "Systémy online. 👋 Ahoj! Napiš normálně, co potřebuješ — třeba „Kolik je 125 krát 48?“ nebo „Pamatuj si, že můj projekt se jmenuje NOVA.“", false);
+}
+
+form.addEventListener("submit", event => {
+  event.preventDefault();
+  send(input.value);
+});
+document.querySelectorAll("[data-prompt]").forEach(button => {
+  button.addEventListener("click", () => send(button.dataset.prompt));
+});
+document.getElementById("clear").addEventListener("click", () => {
+  history = [];
+  try { localStorage.removeItem(CHAT_KEY); } catch {}
+  chat.replaceChildren();
+  show("NOVA", "Chat byl vymazán. Poznámky zůstaly uložené.", false);
+});
+</script>
+</body>
+</html>
